@@ -24,6 +24,7 @@ Only a handful of helpers are carried over from the much larger MOT booking
 agent to keep the logic lightweight and easy to reason about.
 """
 
+import ast
 import asyncio
 import contextvars
 import importlib
@@ -31,6 +32,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -47,6 +49,9 @@ from uagents_core.contrib.protocols.chat import (
     chat_protocol_spec,
 )
 from dotenv import load_dotenv
+
+from tool_allowlist import validate_gmail_tool_name
+
 # ExternalStorage removed – we no longer back up tokens externally
 
 load_dotenv()
@@ -145,10 +150,26 @@ CURRENT_SESSION_DATA: contextvars.ContextVar[dict] = contextvars.ContextVar("CUR
 # FastMCP tool execution helper (automatic retry + token-path injection)
 # ---------------------------------------------------------------------------
 
+
+def _text_tool_fallback_enabled() -> bool:
+    """Opt-in dev fallback: parse tool_calls from plain assistant text (unsafe for production)."""
+    return os.getenv("GMAIL_CHAT_PARSE_TEXT_TOOLS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 async def _run_gmail_tool(fn_name: str, args: Dict[str, Any]) -> str:
     """Execute *fn_name* with *args* against the Gmail FastMCP server."""
 
-    logger.debug("��️  CALLING TOOL: %s  args=%s", fn_name, args)
+    try:
+        fn_name = validate_gmail_tool_name(fn_name)
+    except ValueError as exc:
+        logger.warning("Blocked disallowed Gmail tool: %s", exc)
+        return json.dumps({"success": False, "error": str(exc)})
+
+    logger.debug("CALLING TOOL: %s  args=%s", fn_name, args)
 
     # Ensure the shared gmail_auth instance points at the session-specific token file
     try:
@@ -208,6 +229,99 @@ async def _run_gmail_tool(fn_name: str, args: Dict[str, Any]) -> str:
         except Exception:
             pass
     return json.dumps({"success": False, "error": "Unknown tool failure"})
+
+
+async def _execute_text_tool_calls_fallback(assistant_reply: str) -> str:
+    """
+    Dev-only: parse tool_calls JSON embedded in assistant plain text.
+
+    Disabled by default (set GMAIL_CHAT_PARSE_TEXT_TOOLS=true to enable).
+    """
+    reply = assistant_reply
+
+    match = re.search(r"tool_calls\s*:?\s*(\{.*\})", reply, flags=re.S)
+    if match:
+        blob = match.group(1)
+        try:
+            container = json.loads(blob)
+        except Exception:
+            try:
+                container = ast.literal_eval(blob)
+            except Exception:
+                container = None
+
+        if isinstance(container, dict):
+            calls: list[dict[str, Any]] = []
+            if "calls" in container and isinstance(container["calls"], list):
+                calls = container["calls"]
+            elif container.get("tool") == "parallel_tool_calls":
+                calls = container.get("params", [])
+            elif "tool" in container:
+                calls = [container]
+
+            if calls:
+                outs = []
+                for call in calls:
+                    name = (
+                        call.get("tool")
+                        or call.get("method")
+                        or call.get("function", {}).get("name", "")
+                    )
+                    params = (
+                        call.get("params")
+                        or call.get("parameters")
+                        or call.get("input")
+                        or {}
+                    )
+                    try:
+                        safe_name = validate_gmail_tool_name(str(name))
+                    except ValueError:
+                        continue
+                    out = await _run_gmail_tool(safe_name, params)
+                    outs.append(
+                        {"tool_call_id": f"manual_{safe_name}", "output": out}
+                    )
+
+                if outs:
+                    reply = await _call_openai_responses(
+                        [{"role": "assistant", "content": "", "tool_outputs": outs}]
+                    )
+
+    if reply.strip().startswith("parallel_tool_calls"):
+        list_match = re.search(
+            r"parallel_tool_calls\s*:?\s*(\[.*\])", reply, flags=re.S
+        )
+        if list_match:
+            list_blob = list_match.group(1)
+            try:
+                call_list = json.loads(list_blob)
+            except Exception:
+                try:
+                    call_list = ast.literal_eval(list_blob)
+                except Exception:
+                    call_list = None
+
+            if isinstance(call_list, list):
+                outs = []
+                for call in call_list:
+                    name = call.get("name") or call.get("tool") or ""
+                    params = call.get("params") or {}
+                    try:
+                        safe_name = validate_gmail_tool_name(str(name))
+                    except ValueError:
+                        continue
+                    out = await _run_gmail_tool(safe_name, params)
+                    outs.append(
+                        {"tool_call_id": f"manual_{safe_name}", "output": out}
+                    )
+
+                if outs:
+                    reply = await _call_openai_responses(
+                        [{"role": "assistant", "content": "", "tool_outputs": outs}]
+                    )
+
+    return reply
+
 
 # ---------------------------------------------------------------------------
 # OpenAI *Responses* streaming helper (spec compliant)
@@ -574,73 +688,18 @@ async def handle_chat_message(ctx: Context, sender: str, msg: ChatMessage):  # n
         # 4) Call OpenAI Responses API → possibly triggers tool calls
         assistant_reply = await _call_openai_responses(messages)
 
-        # ---------------- Fallback: model leaked raw tool_calls JSON -------
-        try:
-            import re as _re, ast as _ast
-
-            # If assistant dumped a tool_calls block, parse & execute it, then re-call OpenAI
-            _match = _re.search(r"tool_calls\s*:?\s*(\{.*\})", assistant_reply, flags=_re.S)
-            if _match:
-                blob = _match.group(1)
-                try:
-                    container = json.loads(blob)
-                except Exception:
-                    try:
-                        container = _ast.literal_eval(blob)
-                    except Exception:
-                        container = None
-
-                if isinstance(container, dict):
-                    calls = []
-                    if "calls" in container and isinstance(container["calls"], list):
-                        calls = container["calls"]
-                    elif container.get("tool") == "parallel_tool_calls":
-                        calls = container.get("params", [])
-                    elif "tool" in container:
-                        calls = [container]
-
-                    if calls:
-                        outs = []
-                        for c in calls:
-                            name = c.get("tool") or c.get("method") or c.get("function", {}).get("name", "")
-                            name = name.split(".")[-1]
-                            params = c.get("params") or c.get("parameters") or c.get("input") or {}
-                            out = await _run_gmail_tool(name, params)
-                            outs.append({"tool_call_id": f"manual_{name}", "output": out})
-
-                        # get proper assistant reply with outputs
-                        assistant_reply = await _call_openai_responses([
-                            {"role": "assistant", "content": "", "tool_outputs": outs},
-                        ])
-
-            # Raw list variant starting with parallel_tool_calls [ ... ]
-            if assistant_reply.strip().startswith("parallel_tool_calls"):
-                _m = _re.search(r"parallel_tool_calls\s*:?\s*(\[.*\])", assistant_reply, flags=_re.S)
-                if _m:
-                    list_blob = _m.group(1)
-                    try:
-                        call_list = json.loads(list_blob)
-                    except Exception:
-                        try:
-                            call_list = _ast.literal_eval(list_blob)
-                        except Exception:
-                            call_list = None
-
-                    if isinstance(call_list, list):
-                        outs = []
-                        for c in call_list:
-                            name = c.get("name") or c.get("tool")
-                            name = name.split(".")[-1]
-                            params = c.get("params") or {}
-                            out = await _run_gmail_tool(name, params)
-                            outs.append({"tool_call_id": f"manual_{name}", "output": out})
-
-                        assistant_reply = await _call_openai_responses([
-                            {"role": "assistant", "content": "", "tool_outputs": outs},
-                        ])
-
-        except Exception as _fallback_err:
-            logger.debug("Fallback parsing skipped: %s", _fallback_err)
+        # Optional dev fallback: parse tool_calls from plain assistant text (off by default)
+        if _text_tool_fallback_enabled():
+            try:
+                assistant_reply = await _execute_text_tool_calls_fallback(
+                    assistant_reply
+                )
+            except Exception as fallback_err:
+                logger.debug("Text tool_call fallback skipped: %s", fallback_err)
+        else:
+            logger.debug(
+                "Text tool_call fallback disabled (set GMAIL_CHAT_PARSE_TEXT_TOOLS=true to enable)"
+            )
 
         session_data.setdefault("messages", []).append({"source": "assistant", "content": assistant_reply})
 

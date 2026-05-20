@@ -98,6 +98,7 @@ See `env.sample` for the full list.  The essentials:
 | `GMAIL_MCP_PORT` | FastMCP SSE port (default 8081). |
 | `GMAIL_MCP_URL` | Public **https** URL of the SSE server – required because OpenAI tool-calls only connect over TLS. Use ngrok or CloudRun and include `/sse/` (e.g. `https://abcd.ngrok-free.app/sse/`). |
 | `GMAIL_TOKENS_DIR` | Directory for temporary token JSON files (default `.tokens`). |
+| `GMAIL_CHAT_PARSE_TEXT_TOOLS` | **Default off.** Set to `true` only for local dev to parse `tool_calls` from assistant plain text (not recommended for production). |
 
 ---
 

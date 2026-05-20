@@ -4,6 +4,10 @@ All notable changes to this repository are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mcp-agents/gmail_chat_uagent`: block prompt-injection tool abuse — Gmail MCP tools must match an allowlist in `_run_gmail_tool`; regex parsing of `tool_calls` from assistant plain text is disabled by default (`GMAIL_CHAT_PARSE_TEXT_TOOLS` opt-in for dev only)
+
 ### Added
 - `security-scanner-agent/`: LLM-powered code security analysis agent that scans code snippets via ASI:One and returns structured vulnerability reports (type, severity, line number, description, suggested fix). Built on a multi-agent Bureau using the standard Agent Chat Protocol; ASI:One-compatible and discoverable on Agentverse.
 - `ticketlens-agent/`: Live real-time travel discovery AI agent powered by TicketLens MCP. High-precision reasoning utilizing the ASI1 LLM, persistent `uAgents` storage, and directly actionable booking deep links.
