@@ -2,6 +2,8 @@
 
 The first [Pydantic AI](https://ai.pydantic.dev/) example in this repo. It shops shipping rates across whatever carriers are connected in Shippo, and buys the label once you approve the price, entirely through ASI:One Interactive Cards.
 
+Demo video: https://youtu.be/ZR83LAA2lJI
+
 ## Architecture
 
 ![Architecture diagram](architecture.png)
