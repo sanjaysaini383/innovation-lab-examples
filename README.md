@@ -109,7 +109,6 @@ innovation-lab-examples/
 | [Claude Agent SDK](Claude%20Agent%20SDK/) | Real estate search agent with Claude SDK | Python, Claude SDK, uAgents | 🟡 Intermediate |
 | [google-genai-parallel-processing](google-genai-parallel-processing/) | Parallel processing with Google GenAI | Python, Google GenAI, uAgents | 🟡 Intermediate |
 | [flight-tracker-openai-workflow-agent](flight-tracker-openai-workflow-agent/) | Flight tracking with OpenAI workflow agents | Python, OpenAI SDK, uAgents | 🟡 Intermediate |
-| [pydantic-agent/shipping-label-agent](pydantic-agent/shipping-label-agent/) | First Pydantic AI example: test-mode shipping-label booking with structured output, dependency injection, requires_approval human-in-the-loop gating, two-tier Stripe payments, and Shippo test-mode labels via interactive cards | Python, uAgents, Pydantic AI, ASI:One, Stripe, Shippo, Cards | 🔴 Advanced |
 
 ### 🔗 Agent-to-Agent (A2A)
 
